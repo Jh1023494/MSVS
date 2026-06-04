@@ -1,0 +1,4 @@
+interface:
+  display_name: "Visualize Markdown Structure"
+  short_description: "Turn Markdown discussion into accordion visual maps."
+  default_prompt: "Use $visualize-markdown-structure to turn our Markdown discussion into an accordion-style visual map I can open and explore."
