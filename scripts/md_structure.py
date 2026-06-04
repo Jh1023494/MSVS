@@ -933,7 +933,7 @@ function fitToView() {{
     if (!tree) return;
     const rect = tree.getBoundingClientRect();
     const pad = 72;
-    const nextScale = Math.max(0.18, Math.min(1.18, Math.min((window.innerWidth - pad * 2) / rect.width, (window.innerHeight - pad * 2) / rect.height)));
+    const nextScale = Math.max(0.05, Math.min(1.35, Math.min((window.innerWidth - pad * 2) / rect.width, (window.innerHeight - pad * 2) / rect.height)));
     scale = Number.isFinite(nextScale) ? nextScale : 1;
     offsetX = pad - rect.left * scale;
     offsetY = pad - rect.top * scale;
@@ -1216,6 +1216,43 @@ function canvasToBlob(canvasElement) {{
   }});
 }}
 
+function svgEsc(value) {{
+  return String(value || "").replace(/[&<>"]/g, c => ({{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}}[c]));
+}}
+
+function wrapForSvg(text, maxWidth, fontSize) {{
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+  const units = normalized.includes(" ") ? normalized.split(" ") : Array.from(normalized);
+  const lines = [];
+  let current = "";
+  const unitGap = normalized.includes(" ") ? " " : "";
+  const approx = Math.max(6, fontSize * 0.56);
+  units.forEach(unit => {{
+    const next = current ? current + unitGap + unit : unit;
+    if (next.length * approx > maxWidth && current) {{
+      lines.push(current);
+      current = unit;
+    }} else {{
+      current = next;
+    }}
+  }});
+  if (current) lines.push(current);
+  return lines;
+}}
+
+function collectContentLines(node, maxWidth) {{
+  const lines = [];
+  const content = node.querySelector(".content");
+  if (!content || getComputedStyle(content).display === "none") return lines;
+  content.querySelectorAll("p, li, pre, th, td, .empty").forEach(part => {{
+    const prefix = part.tagName === "LI" ? "- " : "";
+    const text = prefix + part.textContent.trim();
+    wrapForSvg(text, maxWidth, 12).slice(0, 8).forEach(line => lines.push(line));
+  }});
+  return lines.slice(0, 18);
+}}
+
 async function exportPng() {{
   const button = document.getElementById("exportPng");
   const previousLabel = button.textContent;
@@ -1225,7 +1262,8 @@ async function exportPng() {{
     if (document.fonts && document.fonts.ready) await document.fonts.ready;
     drawConnections();
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const nodes = visibleItems().map(item => item.querySelector(":scope > .node")).filter(Boolean);
+    const items = visibleItems();
+    const nodes = items.map(item => item.querySelector(":scope > .node")).filter(Boolean);
     if (!nodes.length) throw new Error("No visible nodes to export.");
 
     const nodeRects = nodes.map(node => node.getBoundingClientRect());
@@ -1240,56 +1278,83 @@ async function exportPng() {{
     const maxY = Math.ceil(Math.max(...allRects.map(rect => rect.bottom)) + pad);
     const width = Math.max(320, maxX - minX);
     const height = Math.max(240, maxY - minY);
+    const bg = themeValue("--bg");
+    const grid = themeValue("--bg-grid") || "rgba(148, 163, 184, 0.08)";
+    const textColor = themeValue("--text") || "#e5e7eb";
+    const mutedColor = themeValue("--muted") || "#aab7c7";
+    const contentColor = themeValue("--content") || "#d4dde9";
+    const selectedColor = themeValue("--accent-strong") || "#f59e0b";
+    const borderColor = themeValue("--border") || "#475569";
 
-    const exportRoot = document.createElement("div");
-    exportRoot.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
-    exportRoot.setAttribute("id", "export-root");
-    exportRoot.style.position = "relative";
-    exportRoot.style.width = `${{width}}px`;
-    exportRoot.style.height = `${{height}}px`;
-    exportRoot.style.overflow = "hidden";
-    exportRoot.style.backgroundColor = themeValue("--bg");
-    exportRoot.style.backgroundImage = `linear-gradient(${{themeValue("--bg-grid")}} 1px, transparent 1px), linear-gradient(90deg, ${{themeValue("--bg-grid")}} 1px, transparent 1px)`;
-    exportRoot.style.backgroundSize = "28px 28px";
-    exportRoot.style.fontFamily = `"Segoe UI", "Malgun Gothic", Arial, sans-serif`;
-    ["--bg", "--bg-grid", "--surface", "--surface-strong", "--toolbar", "--border", "--text", "--muted", "--content", "--accent", "--accent-strong", "--connector", "--root-bg", "--root-accent", "--branch-bg", "--branch-accent", "--topic-bg", "--topic-accent", "--detail-bg", "--detail-accent", "--column-gap", "--row-gap"].forEach(name => {{
-      exportRoot.style.setProperty(name, themeValue(name));
+    const parts = [];
+    parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${{width}}" height="${{height}}" viewBox="0 0 ${{width}} ${{height}}">`);
+    parts.push(`<defs><pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse"><path d="M 28 0 L 0 0 0 28" fill="none" stroke="${{svgEsc(grid)}}" stroke-width="1"/></pattern><filter id="shadow" x="-20%" y="-20%" width="140%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000000" flood-opacity="0.22"/></filter></defs>`);
+    parts.push(`<rect width="100%" height="100%" fill="${{svgEsc(bg)}}"/><rect width="100%" height="100%" fill="url(#grid)"/>`);
+
+    Array.from(connections.querySelectorAll("path")).forEach(path => {{
+      const d = path.getAttribute("d");
+      if (!d) return;
+      const shifted = d.replace(/-?\d+(?:\.\d+)?/g, (match, offset, source) => {{
+        const before = source.slice(0, offset).trimEnd();
+        const previous = before[before.length - 1];
+        const value = Number(match);
+        if (!Number.isFinite(value)) return match;
+        return String(Math.round((value + (previous === "," ? -minY : -minX)) * 100) / 100);
+      }});
+      const stroke = path.getAttribute("stroke") || themeValue("--connector") || "#7dd3fc";
+      const strokeWidth = path.getAttribute("stroke-width") || "2";
+      const opacity = path.getAttribute("opacity") || "0.78";
+      parts.push(`<path d="${{svgEsc(shifted)}}" fill="none" stroke="${{svgEsc(stroke)}}" stroke-width="${{svgEsc(strokeWidth)}}" stroke-linecap="round" opacity="${{svgEsc(opacity)}}"/>`);
     }});
 
-    const style = document.querySelector("style").cloneNode(true);
-    exportRoot.appendChild(style);
+    nodes.forEach(node => {{
+      const rect = node.getBoundingClientRect();
+      const item = node.closest("li");
+      const computed = getComputedStyle(node);
+      const x = Math.round(rect.left - minX);
+      const y = Math.round(rect.top - minY);
+      const w = Math.round(rect.width);
+      const h = Math.round(rect.height);
+      const fill = computed.backgroundColor || themeValue("--surface");
+      const accent = computed.borderLeftColor || themeValue("--accent");
+      const border = item && item.classList.contains("selected") ? selectedColor : borderColor;
+      const depth = Number(item ? item.dataset.depth || 0 : 0);
+      const labelFont = labelSize(depth);
+      parts.push(`<g filter="url(#shadow)"><rect x="${{x}}" y="${{y}}" width="${{w}}" height="${{h}}" rx="8" fill="${{svgEsc(fill)}}" stroke="${{svgEsc(border)}}" stroke-width="${{item && item.classList.contains("selected") ? 3 : 1}}"/><rect x="${{x}}" y="${{y}}" width="${{depth === 0 ? 8 : depth <= 2 ? 7 : 5}}" height="${{h}}" rx="4" fill="${{svgEsc(accent)}}"/></g>`);
+      const label = node.querySelector(".label") ? node.querySelector(".label").textContent.trim() : "";
+      const meta = node.querySelector(".meta") ? node.querySelector(".meta").textContent.trim() : "";
+      let ty = y + 24;
+      wrapForSvg(label, w - 46, labelFont).slice(0, 4).forEach(line => {{
+        parts.push(`<text x="${{x + 34}}" y="${{ty}}" fill="${{svgEsc(textColor)}}" font-family="Segoe UI, Malgun Gothic, Arial, sans-serif" font-size="${{labelFont}}" font-weight="700">${{svgEsc(line)}}</text>`);
+        ty += labelFont * 1.35;
+      }});
+      if (meta) {{
+        parts.push(`<text x="${{x + 34}}" y="${{ty + 4}}" fill="${{svgEsc(mutedColor)}}" font-family="Segoe UI, Malgun Gothic, Arial, sans-serif" font-size="12">${{svgEsc(meta)}}</text>`);
+        ty += 22;
+      }}
+      const contentLines = collectContentLines(node, w - 28);
+      if (contentLines.length) {{
+        parts.push(`<line x1="${{x + 12}}" y1="${{ty}}" x2="${{x + w - 12}}" y2="${{ty}}" stroke="${{svgEsc(borderColor)}}" stroke-width="1" opacity="0.85"/>`);
+        ty += 18;
+        contentLines.forEach(line => {{
+          if (ty < y + h - 10) {{
+            parts.push(`<text x="${{x + 14}}" y="${{ty}}" fill="${{svgEsc(contentColor)}}" font-family="Segoe UI, Malgun Gothic, Arial, sans-serif" font-size="12">${{svgEsc(line)}}</text>`);
+            ty += 18;
+          }}
+        }});
+      }}
+    }});
 
-    const connectorClone = connections.cloneNode(true);
-    connectorClone.style.position = "absolute";
-    connectorClone.style.left = `${{-minX}}px`;
-    connectorClone.style.top = `${{-minY}}px`;
-    connectorClone.style.width = `${{Math.max(window.innerWidth, maxX)}}px`;
-    connectorClone.style.height = `${{Math.max(window.innerHeight, maxY)}}px`;
-    connectorClone.style.overflow = "visible";
-    exportRoot.appendChild(connectorClone);
-
-    const canvasClone = canvas.cloneNode(true);
-    canvasClone.style.position = "absolute";
-    canvasClone.style.left = `${{-minX}}px`;
-    canvasClone.style.top = `${{-minY}}px`;
-    canvasClone.style.transform = canvas.style.transform;
-    canvasClone.style.transformOrigin = "0 0";
-    exportRoot.appendChild(canvasClone);
-
-    const serialized = new XMLSerializer().serializeToString(exportRoot);
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${{width}}" height="${{height}}" viewBox="0 0 ${{width}} ${{height}}"><foreignObject x="0" y="0" width="${{width}}" height="${{height}}">${{serialized}}</foreignObject></svg>`;
+    parts.push("</svg>");
+    const svg = parts.join("");
     const image = await loadSvgImage(svg);
-
     const canvasOut = document.createElement("canvas");
     const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
     canvasOut.width = Math.round(width * pixelRatio);
     canvasOut.height = Math.round(height * pixelRatio);
-    canvasOut.style.width = `${{width}}px`;
-    canvasOut.style.height = `${{height}}px`;
     const context = canvasOut.getContext("2d");
     context.scale(pixelRatio, pixelRatio);
     context.drawImage(image, 0, 0, width, height);
-
     const blob = await canvasToBlob(canvasOut);
     downloadBlob(blob, `${{safeFilename(data.label)}}.full-map.png`);
   }} catch (error) {{
@@ -1446,7 +1511,7 @@ viewport.addEventListener("pointerup", event => {{
 viewport.addEventListener("wheel", event => {{
   event.preventDefault();
   const previous = scale;
-  scale = Math.min(2.5, Math.max(0.25, scale + (event.deltaY < 0 ? 0.08 : -0.08)));
+  scale = Math.min(5, Math.max(0.05, scale + (event.deltaY < 0 ? 0.08 : -0.08)));
   const rect = viewport.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
@@ -1455,8 +1520,8 @@ viewport.addEventListener("wheel", event => {{
   applyTransform();
 }}, {{ passive: false }});
 
-document.getElementById("zoomIn").onclick = () => {{ scale = Math.min(2.5, scale + 0.15); applyTransform(); }};
-document.getElementById("zoomOut").onclick = () => {{ scale = Math.max(0.25, scale - 0.15); applyTransform(); }};
+document.getElementById("zoomIn").onclick = () => {{ scale = Math.min(5, scale + 0.15); applyTransform(); }};
+document.getElementById("zoomOut").onclick = () => {{ scale = Math.max(0.05, scale - 0.15); applyTransform(); }};
 document.getElementById("reset").onclick = resetView;
 document.getElementById("fit").onclick = fitToView;
 document.getElementById("exportHtml").onclick = exportHtml;
