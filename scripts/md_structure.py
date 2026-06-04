@@ -1303,18 +1303,21 @@ async function exportPng() {{
     const nodes = items.map(item => item.querySelector(":scope > .node")).filter(Boolean);
     if (!nodes.length) throw new Error("No visible nodes to export.");
 
+    const effectiveScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    const viewportRect = viewport.getBoundingClientRect();
     const nodeRects = nodes.map(node => node.getBoundingClientRect());
-    const pathRects = Array.from(connections.querySelectorAll("path"))
-      .map(path => path.getBoundingClientRect())
-      .filter(rect => rect.width || rect.height);
-    const allRects = nodeRects.concat(pathRects);
+    const allScreenRects = nodeRects;
     const pad = 96;
-    const minX = Math.floor(Math.min(...allRects.map(rect => rect.left)) - pad);
-    const minY = Math.floor(Math.min(...allRects.map(rect => rect.top)) - pad);
-    const maxX = Math.ceil(Math.max(...allRects.map(rect => rect.right)) + pad);
-    const maxY = Math.ceil(Math.max(...allRects.map(rect => rect.bottom)) + pad);
-    const width = Math.max(320, maxX - minX);
-    const height = Math.max(240, maxY - minY);
+    const minScreenX = Math.floor(Math.min(...allScreenRects.map(rect => rect.left)) - pad * effectiveScale);
+    const minScreenY = Math.floor(Math.min(...allScreenRects.map(rect => rect.top)) - pad * effectiveScale);
+    const maxScreenX = Math.ceil(Math.max(...allScreenRects.map(rect => rect.right)) + pad * effectiveScale);
+    const maxScreenY = Math.ceil(Math.max(...allScreenRects.map(rect => rect.bottom)) + pad * effectiveScale);
+    const width = Math.max(320, Math.ceil((maxScreenX - minScreenX) / effectiveScale));
+    const height = Math.max(240, Math.ceil((maxScreenY - minScreenY) / effectiveScale));
+    const toExportX = value => Math.round(((value - minScreenX) / effectiveScale) * 100) / 100;
+    const toExportY = value => Math.round(((value - minScreenY) / effectiveScale) * 100) / 100;
+    const toExportSize = value => Math.round((value / effectiveScale) * 100) / 100;
+
     const bg = themeValue("--bg");
     const grid = themeValue("--bg-grid") || "rgba(148, 163, 184, 0.08)";
     const textColor = themeValue("--text") || "#e5e7eb";
@@ -1322,36 +1325,46 @@ async function exportPng() {{
     const contentColor = themeValue("--content") || "#d4dde9";
     const selectedColor = themeValue("--accent-strong") || "#f59e0b";
     const borderColor = themeValue("--border") || "#475569";
+    const connectorColor = themeValue("--connector") || "#7dd3fc";
 
     const parts = [];
     parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${{width}}" height="${{height}}" viewBox="0 0 ${{width}} ${{height}}">`);
     parts.push(`<defs><pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse"><path d="M 28 0 L 0 0 0 28" fill="none" stroke="${{svgEsc(grid)}}" stroke-width="1"/></pattern><filter id="shadow" x="-20%" y="-20%" width="140%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000000" flood-opacity="0.22"/></filter></defs>`);
     parts.push(`<rect width="100%" height="100%" fill="${{svgEsc(bg)}}"/><rect width="100%" height="100%" fill="url(#grid)"/>`);
 
-    Array.from(connections.querySelectorAll("path")).forEach(path => {{
-      const d = path.getAttribute("d");
-      if (!d) return;
-      const shifted = d.replace(/-?\d+(?:\.\d+)?/g, (match, offset, source) => {{
-        const before = source.slice(0, offset).trimEnd();
-        const previous = before[before.length - 1];
-        const value = Number(match);
-        if (!Number.isFinite(value)) return match;
-        return String(Math.round((value + (previous === "," ? -minY : -minX)) * 100) / 100);
+    items.forEach(parentLi => {{
+      if (parentLi.classList.contains("children-hidden")) return;
+      const parentNode = parentLi.querySelector(":scope > .node");
+      const childList = parentLi.querySelector(":scope > ul");
+      if (!parentNode || !childList) return;
+      Array.from(childList.querySelectorAll(":scope > li")).filter(isVisibleItem).forEach(childLi => {{
+        const childNode = childLi.querySelector(":scope > .node");
+        if (!childNode) return;
+        const parentRect = parentNode.getBoundingClientRect();
+        const childRect = childNode.getBoundingClientRect();
+        const x1 = toExportX(parentRect.right);
+        const y1 = toExportY(parentRect.top + parentRect.height / 2);
+        const x2 = toExportX(childRect.left);
+        const y2 = toExportY(childRect.top + childRect.height / 2);
+        const curve = Math.max(70, Math.abs(x2 - x1) * 0.5);
+        const childDepth = Number(childLi.dataset.depth || 1);
+        const highlighted = parentLi.classList.contains("selected") || childLi.classList.contains("selected");
+        const strokeWidth = connectionWidth(childDepth) + (highlighted ? 2 : 0);
+        const stroke = highlighted ? selectedColor : connectorColor;
+        const opacity = highlighted ? 1 : 0.78;
+        const d = `M ${{x1}} ${{y1}} C ${{x1 + curve}} ${{y1}}, ${{x2 - curve}} ${{y2}}, ${{x2}} ${{y2}}`;
+        parts.push(`<path d="${{svgEsc(d)}}" fill="none" stroke="${{svgEsc(stroke)}}" stroke-width="${{strokeWidth}}" stroke-linecap="round" opacity="${{opacity}}"/>`);
       }});
-      const stroke = path.getAttribute("stroke") || themeValue("--connector") || "#7dd3fc";
-      const strokeWidth = path.getAttribute("stroke-width") || "2";
-      const opacity = path.getAttribute("opacity") || "0.78";
-      parts.push(`<path d="${{svgEsc(shifted)}}" fill="none" stroke="${{svgEsc(stroke)}}" stroke-width="${{svgEsc(strokeWidth)}}" stroke-linecap="round" opacity="${{svgEsc(opacity)}}"/>`);
     }});
 
     nodes.forEach(node => {{
       const rect = node.getBoundingClientRect();
       const item = node.closest("li");
       const computed = getComputedStyle(node);
-      const x = Math.round(rect.left - minX);
-      const y = Math.round(rect.top - minY);
-      const w = Math.round(rect.width);
-      const h = Math.round(rect.height);
+      const x = toExportX(rect.left);
+      const y = toExportY(rect.top);
+      const w = toExportSize(rect.width);
+      const h = toExportSize(rect.height);
       const fill = computed.backgroundColor || themeValue("--surface");
       const accent = computed.borderLeftColor || themeValue("--accent");
       const border = item && item.classList.contains("selected") ? selectedColor : borderColor;
