@@ -340,6 +340,304 @@ def markdown_fragment_to_html(markdown_text):
     return "\n".join(blocks)
 
 
+
+
+def excalidraw_id(prefix, index):
+    alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+    value = index + 1000
+    encoded = ""
+    while value:
+        value, remainder = divmod(value, 36)
+        encoded = alphabet[remainder] + encoded
+    return f"{prefix}_{encoded or '0'}"
+
+
+def excalidraw_seed(index):
+    return 100000 + index * 7919 % 900000
+
+
+def wrap_plain_text(value, max_chars, max_lines=None):
+    value = re.sub(r"\s+", " ", strip_inline(value or "")).strip()
+    if not value:
+        return []
+    chunks = value.split(" ") if " " in value else list(value)
+    gap = " " if " " in value else ""
+    lines = []
+    current = ""
+    for chunk in chunks:
+        candidate = f"{current}{gap}{chunk}" if current else chunk
+        if len(candidate) > max_chars and current:
+            lines.append(current)
+            current = chunk
+            if max_lines and len(lines) >= max_lines:
+                break
+        else:
+            current = candidate
+    if current and (not max_lines or len(lines) < max_lines):
+        lines.append(current)
+    return lines
+
+
+def content_preview_lines(markdown_text, max_lines=5, max_chars=34):
+    lines = []
+    in_code = False
+    for raw in (markdown_text or "").splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_code = not in_code
+            if len(lines) < max_lines:
+                lines.append("[code block]")
+            continue
+        if not stripped:
+            continue
+        if TABLE_RE.match(stripped):
+            text = "[table] " + stripped.replace("|", " ").strip()
+        elif in_code:
+            text = "` " + stripped
+        else:
+            item = LIST_RE.match(stripped)
+            text = "- " + item.group(3) if item else stripped
+        for line in wrap_plain_text(text, max_chars, max_lines - len(lines)):
+            lines.append(line)
+            if len(lines) >= max_lines:
+                return lines
+    return lines
+
+
+def excalidraw_node_style(depth):
+    if depth <= 0:
+        return {
+            "width": 360,
+            "fill": "#32415a",
+            "stroke": "#f59e0b",
+            "font": 34,
+            "stroke_width": 3,
+        }
+    if depth <= 2:
+        return {
+            "width": 330,
+            "fill": "#243b53",
+            "stroke": "#38bdf8",
+            "font": 27,
+            "stroke_width": 2,
+        }
+    if depth == 3:
+        return {
+            "width": 300,
+            "fill": "#243447",
+            "stroke": "#a78bfa",
+            "font": 22,
+            "stroke_width": 2,
+        }
+    return {
+        "width": 270,
+        "fill": "#202b3a",
+        "stroke": "#94a3b8",
+        "font": 18,
+        "stroke_width": 2,
+    }
+
+
+def flatten_excalidraw_tree(root):
+    flat = []
+
+    def visit(node, parent_id=None):
+        node_id = excalidraw_id("node", len(flat) + 1)
+        flat.append({"id": node_id, "node": node, "parent": parent_id})
+        for child in node.get("children", []):
+            visit(child, node_id)
+
+    visit(root)
+    return flat
+
+
+def assign_excalidraw_layout(root):
+    positions = {}
+    cursor_y = 0
+    column_gap = 460
+    leaf_gap = 170
+
+    def visit(node, node_id, depth, flat_by_node):
+        nonlocal cursor_y
+        children = node.get("children", [])
+        if not children:
+            center_y = cursor_y
+            cursor_y += leaf_gap
+        else:
+            start_y = cursor_y
+            for child in children:
+                visit(child, flat_by_node[id(child)], depth + 1, flat_by_node)
+            end_y = cursor_y - leaf_gap
+            center_y = (start_y + end_y) / 2
+        positions[node_id] = {"x": depth * column_gap, "y": center_y}
+
+    flat = flatten_excalidraw_tree(root)
+    flat_by_node = {id(item["node"]): item["id"] for item in flat}
+    visit(root, flat[0]["id"], 0, flat_by_node)
+    min_y = min(item["y"] for item in positions.values()) if positions else 0
+    for item in positions.values():
+        item["y"] = item["y"] - min_y + 80
+        item["x"] = item["x"] + 80
+    return flat, positions
+
+
+def excalidraw_base_element(element_id, element_type, x, y, width, height, index):
+    return {
+        "id": element_id,
+        "type": element_type,
+        "x": round(x, 2),
+        "y": round(y, 2),
+        "width": round(width, 2),
+        "height": round(height, 2),
+        "angle": 0,
+        "strokeColor": "#94a3b8",
+        "backgroundColor": "transparent",
+        "fillStyle": "solid",
+        "strokeWidth": 2,
+        "strokeStyle": "solid",
+        "roughness": 1,
+        "opacity": 100,
+        "groupIds": [],
+        "frameId": None,
+        "roundness": {"type": 3},
+        "seed": excalidraw_seed(index),
+        "version": 1,
+        "versionNonce": excalidraw_seed(index + 17),
+        "isDeleted": False,
+        "boundElements": None,
+        "updated": 1,
+        "link": None,
+        "locked": False,
+    }
+
+
+def render_excalidraw(data):
+    root = build_interactive_tree(data)
+    flat, positions = assign_excalidraw_layout(root)
+    dimensions = {}
+    elements = []
+    element_index = 1
+
+    for item in flat:
+        node = item["node"]
+        node_id = item["id"]
+        depth = int(node.get("depth", 0))
+        style = excalidraw_node_style(depth)
+        title_lines = wrap_plain_text(node.get("label", ""), 18 if depth <= 2 else 22, 4)
+        content_lines = content_preview_lines(node.get("content_md", ""), max_lines=5, max_chars=36)
+        meta = node.get("meta", "")
+        text_lines = title_lines[:]
+        if meta:
+            text_lines.append(meta)
+        if content_lines:
+            text_lines.append("---")
+            text_lines.extend(content_lines)
+        line_height = 1.25
+        font_size = style["font"]
+        meta_extra = 0 if not meta else 4
+        content_extra = 18 if content_lines else 0
+        text_height = max(42, len(text_lines) * font_size * line_height * 0.72 + meta_extra + content_extra)
+        width = style["width"]
+        height = max(86, min(260, text_height + 34))
+        pos = positions[node_id]
+        x = pos["x"]
+        y = pos["y"] - height / 2
+        dimensions[node_id] = {"x": x, "y": y, "width": width, "height": height}
+
+        group_id = excalidraw_id("group", element_index)
+        rect = excalidraw_base_element(excalidraw_id("rect", element_index), "rectangle", x, y, width, height, element_index)
+        rect.update(
+            {
+                "strokeColor": style["stroke"],
+                "backgroundColor": style["fill"],
+                "strokeWidth": style["stroke_width"],
+                "groupIds": [group_id],
+            }
+        )
+        elements.append(rect)
+        element_index += 1
+
+        text = "\n".join(text_lines)
+        text_el = excalidraw_base_element(
+            excalidraw_id("text", element_index),
+            "text",
+            x + 18,
+            y + 16,
+            width - 36,
+            height - 28,
+            element_index,
+        )
+        text_el.update(
+            {
+                "strokeColor": "#e5e7eb",
+                "backgroundColor": "transparent",
+                "fontSize": font_size,
+                "fontFamily": 1,
+                "text": text,
+                "rawText": text,
+                "textAlign": "left",
+                "verticalAlign": "top",
+                "containerId": None,
+                "originalText": text,
+                "lineHeight": 1.25,
+                "baseline": max(20, int((height - 28) * 0.82)),
+                "groupIds": [group_id],
+            }
+        )
+        elements.append(text_el)
+        element_index += 1
+
+    for item in flat:
+        parent_id = item["parent"]
+        if not parent_id:
+            continue
+        child_id = item["id"]
+        parent = dimensions[parent_id]
+        child = dimensions[child_id]
+        start_x = parent["x"] + parent["width"]
+        start_y = parent["y"] + parent["height"] / 2
+        end_x = child["x"]
+        end_y = child["y"] + child["height"] / 2
+        dx = max(80, end_x - start_x)
+        dy = end_y - start_y
+        arrow = excalidraw_base_element(
+            excalidraw_id("arrow", element_index), "arrow", start_x, start_y, dx, dy, element_index
+        )
+        child_depth = int(item["node"].get("depth", 1))
+        arrow.update(
+            {
+                "strokeColor": "#7dd3fc",
+                "backgroundColor": "transparent",
+                "strokeWidth": max(1, min(8, 9 - child_depth)),
+                "roundness": {"type": 2},
+                "points": [[0, 0], [dx * 0.5, 0], [dx * 0.5, dy], [dx, dy]],
+                "lastCommittedPoint": None,
+                "startBinding": None,
+                "endBinding": None,
+                "startArrowhead": None,
+                "endArrowhead": "arrow",
+            }
+        )
+        elements.append(arrow)
+        element_index += 1
+
+    return json.dumps(
+        {
+            "type": "excalidraw",
+            "version": 2,
+            "source": "visualize-markdown-structure",
+            "elements": elements,
+            "appState": {
+                "gridSize": 20,
+                "viewBackgroundColor": "#18212f",
+                "currentItemStrokeColor": "#7dd3fc",
+                "currentItemBackgroundColor": "transparent",
+            },
+            "files": {},
+        },
+        ensure_ascii=False,
+        indent=2,
+    ) + "\n"
 def render_html(data):
     tree_json = json.dumps(build_interactive_tree(data), ensure_ascii=False)
     return f"""<!doctype html>
@@ -1644,8 +1942,8 @@ def main():
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument(
         "--formats",
-        default="interactive,outline",
-        help="Comma-separated list: interactive,outline,mindmap,flowchart,html",
+        default="interactive,outline,excalidraw",
+        help="Comma-separated list: interactive,outline,mindmap,flowchart,excalidraw,html",
     )
     args = parser.parse_args()
 
@@ -1669,6 +1967,8 @@ def main():
             outputs.append(write_output(out_dir, source, "mindmap.mmd", render_mermaid(data)))
         if "flowchart" in formats:
             outputs.append(write_output(out_dir, source, "flowchart.mmd", render_flowchart(data)))
+        if "excalidraw" in formats:
+            outputs.append(write_output(out_dir, source, "excalidraw", render_excalidraw(data)))
         if "interactive" in formats:
             outputs.append(write_output(out_dir, source, "interactive.html", render_html(data)))
 

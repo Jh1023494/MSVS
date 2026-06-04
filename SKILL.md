@@ -10,7 +10,7 @@ description: Turn Markdown-structured discussion into visible, interactive hiera
 1. Treat the target as Markdown-structured content, not necessarily as a file. If the user has been discussing a Markdown outline in chat, save that current Markdown content into a temporary workspace `.md` input and visualize it.
 2. Use Markdown headings as the structure: `#` is the root topic, `##` is a middle topic, `###` and deeper headings are child topics. Preserve heading wording and ordering.
 3. Store the direct Markdown body under each heading. When a node is opened, show the content that appears below that heading before the next heading.
-4. Generate an interactive HTML visualization by default. It must support:
+4. Generate an interactive HTML visualization by default, and also emit an editable Excalidraw board for export/edit workflows. The HTML visualization must support:
    - Dragging/panning the canvas.
    - Wheel or button zoom in/out.
    - Clicking nodes to open or close that heading's Markdown body.
@@ -33,8 +33,8 @@ description: Turn Markdown-structured discussion into visible, interactive hiera
    - Structured Markdown body rendering for direct heading content: paragraphs, lists, and fenced code blocks should be visually distinct rather than always rendered as one raw text block.
    - Depth-specific card palettes and node sizing so H1/H2/H3/H4 structure reads as root, branch, topic, and detail rather than a flat list.
    - A compact status readout with node count, maximum depth, selected count, open body count, and folded branch count.
-   - Export controls: download the current interactive HTML and export the full visible map as a PNG image from inside the generated page.
-5. Also generate an outline unless the user asks for only the visual.
+   - Export controls: download the current interactive HTML and export the full visible map as a PNG image from inside the generated page. For higher-quality manual editing/export, use the generated `.excalidraw` board.
+5. Also generate an outline and an editable `.excalidraw` board unless the user asks for only one output format.
 6. Return a clickable local file link to the interactive HTML in the final answer so the user can open and inspect it naturally from the conversation.
 7. Use static Mermaid only as a secondary artifact or quick inline preview, not as the main deliverable when the user wants to see or explore the map.
 
@@ -50,6 +50,7 @@ Supported formats:
 
 - `interactive`: Default. Standalone HTML map with left-to-right pan, first-load Fit, HTML/PNG export controls, a toolbar pan toggle, zoom, Slate/Graph/Paper tone switching, multi-selectable and draggable connected heading nodes, auto-updating curved SVG connectors with discrete top-heavy depth-scaled thickness, dramatically depth-scaled heading text, depth-specific node palettes, a live auto/manual tree-layout toggle, per-node resize handles that keep collapsed cards compact, click-to-open structured Markdown body content, separate +/- descendant folding that removes hidden branches from visible calculations, wrapped/selectable node text, a compact structure status readout, and a visible commands panel. Use a dark slate base palette (`#18212f`, `#253142`, `#38bdf8`) for better readability unless the user asks for a different tone.
 - `outline`: Markdown outline with heading levels, list summaries, links, tables, and code block counts.
+- `excalidraw`: Editable Excalidraw scene file with left-to-right document-structure nodes, curved arrows, depth-specific colors, title/meta text, and short direct-content previews. Use this as the stable edit/share/export companion to the interactive HTML.
 - `mindmap`: Mermaid mindmap of the heading hierarchy.
 - `flowchart`: Mermaid flowchart of heading parent/child structure plus reading order.
 - `html`: Alias for `interactive`.
@@ -58,6 +59,6 @@ Prefer the script whenever the user wants to see the visualization. For pasted M
 
 ## Output Guidance
 
-Lead with the interactive HTML path. Include the outline path if generated. If the intended test file was missing, say exactly which file was searched for instead of silently using another file.
+Lead with the interactive HTML path. Include the Excalidraw and outline paths if generated. If the intended test file was missing, say exactly which file was searched for instead of silently using another file.
 
 Do not over-normalize the document. Keep original heading names, ordering, and intent visible, even when proposing a cleaner structure.
