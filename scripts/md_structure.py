@@ -1173,87 +1173,133 @@ function downloadBlob(blob, filename) {{
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }}
 
+function safeFilename(value, fallback) {{
+  const cleaned = String(value || fallback || "markdown-map")
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || fallback || "markdown-map";
+}}
+
 function exportHtml() {{
   const htmlText = "<!doctype html>\\n" + document.documentElement.outerHTML;
-  downloadBlob(new Blob([htmlText], {{type: "text/html;charset=utf-8"}}), `${{data.label || "markdown-map"}}.interactive.html`);
+  downloadBlob(new Blob([htmlText], {{type: "text/html;charset=utf-8"}}), `${{safeFilename(data.label)}}.interactive.html`);
+}}
+
+function loadSvgImage(svgText) {{
+  return new Promise((resolve, reject) => {{
+    const blobUrl = URL.createObjectURL(new Blob([svgText], {{type: "image/svg+xml;charset=utf-8"}}));
+    const image = new Image();
+    image.decoding = "async";
+    image.onload = () => {{
+      URL.revokeObjectURL(blobUrl);
+      resolve(image);
+    }};
+    image.onerror = () => {{
+      URL.revokeObjectURL(blobUrl);
+      const fallback = new Image();
+      fallback.decoding = "async";
+      fallback.onload = () => resolve(fallback);
+      fallback.onerror = () => reject(new Error("PNG export image renderer could not load the generated SVG."));
+      fallback.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svgText);
+    }};
+    image.src = blobUrl;
+  }});
+}}
+
+function canvasToBlob(canvasElement) {{
+  return new Promise((resolve, reject) => {{
+    canvasElement.toBlob(blob => {{
+      if (blob) resolve(blob);
+      else reject(new Error("PNG export could not create an image blob."));
+    }}, "image/png");
+  }});
 }}
 
 async function exportPng() {{
-  drawConnections();
-  await new Promise(resolve => requestAnimationFrame(resolve));
-  const nodes = visibleItems().map(item => item.querySelector(":scope > .node")).filter(Boolean);
-  if (!nodes.length) return;
+  const button = document.getElementById("exportPng");
+  const previousLabel = button.textContent;
+  button.textContent = "Exporting...";
+  button.disabled = true;
+  try {{
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    drawConnections();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const nodes = visibleItems().map(item => item.querySelector(":scope > .node")).filter(Boolean);
+    if (!nodes.length) throw new Error("No visible nodes to export.");
 
-  const nodeRects = nodes.map(node => node.getBoundingClientRect());
-  const pathRects = Array.from(connections.querySelectorAll("path")).map(path => path.getBoundingClientRect()).filter(rect => rect.width || rect.height);
-  const allRects = nodeRects.concat(pathRects);
-  const pad = 80;
-  const minX = Math.floor(Math.min(...allRects.map(rect => rect.left)) - pad);
-  const minY = Math.floor(Math.min(...allRects.map(rect => rect.top)) - pad);
-  const maxX = Math.ceil(Math.max(...allRects.map(rect => rect.right)) + pad);
-  const maxY = Math.ceil(Math.max(...allRects.map(rect => rect.bottom)) + pad);
-  const width = Math.max(320, maxX - minX);
-  const height = Math.max(240, maxY - minY);
+    const nodeRects = nodes.map(node => node.getBoundingClientRect());
+    const pathRects = Array.from(connections.querySelectorAll("path"))
+      .map(path => path.getBoundingClientRect())
+      .filter(rect => rect.width || rect.height);
+    const allRects = nodeRects.concat(pathRects);
+    const pad = 96;
+    const minX = Math.floor(Math.min(...allRects.map(rect => rect.left)) - pad);
+    const minY = Math.floor(Math.min(...allRects.map(rect => rect.top)) - pad);
+    const maxX = Math.ceil(Math.max(...allRects.map(rect => rect.right)) + pad);
+    const maxY = Math.ceil(Math.max(...allRects.map(rect => rect.bottom)) + pad);
+    const width = Math.max(320, maxX - minX);
+    const height = Math.max(240, maxY - minY);
 
-  const exportRoot = document.createElement("div");
-  exportRoot.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
-  exportRoot.style.position = "relative";
-  exportRoot.style.width = `${{width}}px`;
-  exportRoot.style.height = `${{height}}px`;
-  exportRoot.style.overflow = "hidden";
-  exportRoot.style.backgroundColor = themeValue("--bg");
-  exportRoot.style.backgroundImage = `linear-gradient(${{themeValue("--bg-grid")}} 1px, transparent 1px), linear-gradient(90deg, ${{themeValue("--bg-grid")}} 1px, transparent 1px)`;
-  exportRoot.style.backgroundSize = "28px 28px";
-  exportRoot.style.fontFamily = `"Segoe UI", "Malgun Gothic", Arial, sans-serif`;
+    const exportRoot = document.createElement("div");
+    exportRoot.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+    exportRoot.setAttribute("id", "export-root");
+    exportRoot.style.position = "relative";
+    exportRoot.style.width = `${{width}}px`;
+    exportRoot.style.height = `${{height}}px`;
+    exportRoot.style.overflow = "hidden";
+    exportRoot.style.backgroundColor = themeValue("--bg");
+    exportRoot.style.backgroundImage = `linear-gradient(${{themeValue("--bg-grid")}} 1px, transparent 1px), linear-gradient(90deg, ${{themeValue("--bg-grid")}} 1px, transparent 1px)`;
+    exportRoot.style.backgroundSize = "28px 28px";
+    exportRoot.style.fontFamily = `"Segoe UI", "Malgun Gothic", Arial, sans-serif`;
+    ["--bg", "--bg-grid", "--surface", "--surface-strong", "--toolbar", "--border", "--text", "--muted", "--content", "--accent", "--accent-strong", "--connector", "--root-bg", "--root-accent", "--branch-bg", "--branch-accent", "--topic-bg", "--topic-accent", "--detail-bg", "--detail-accent", "--column-gap", "--row-gap"].forEach(name => {{
+      exportRoot.style.setProperty(name, themeValue(name));
+    }});
 
-  const style = document.querySelector("style").cloneNode(true);
-  exportRoot.appendChild(style);
+    const style = document.querySelector("style").cloneNode(true);
+    exportRoot.appendChild(style);
 
-  const connectorClone = connections.cloneNode(true);
-  connectorClone.removeAttribute("id");
-  connectorClone.style.position = "absolute";
-  connectorClone.style.left = `${{-minX}}px`;
-  connectorClone.style.top = `${{-minY}}px`;
-  connectorClone.style.width = "100vw";
-  connectorClone.style.height = "100vh";
-  connectorClone.style.overflow = "visible";
-  exportRoot.appendChild(connectorClone);
+    const connectorClone = connections.cloneNode(true);
+    connectorClone.style.position = "absolute";
+    connectorClone.style.left = `${{-minX}}px`;
+    connectorClone.style.top = `${{-minY}}px`;
+    connectorClone.style.width = `${{Math.max(window.innerWidth, maxX)}}px`;
+    connectorClone.style.height = `${{Math.max(window.innerHeight, maxY)}}px`;
+    connectorClone.style.overflow = "visible";
+    exportRoot.appendChild(connectorClone);
 
-  const canvasClone = canvas.cloneNode(true);
-  canvasClone.removeAttribute("id");
-  canvasClone.style.position = "absolute";
-  canvasClone.style.left = `${{-minX}}px`;
-  canvasClone.style.top = `${{-minY}}px`;
-  canvasClone.style.transform = canvas.style.transform;
-  canvasClone.style.transformOrigin = "0 0";
-  exportRoot.appendChild(canvasClone);
+    const canvasClone = canvas.cloneNode(true);
+    canvasClone.style.position = "absolute";
+    canvasClone.style.left = `${{-minX}}px`;
+    canvasClone.style.top = `${{-minY}}px`;
+    canvasClone.style.transform = canvas.style.transform;
+    canvasClone.style.transformOrigin = "0 0";
+    exportRoot.appendChild(canvasClone);
 
-  const serialized = new XMLSerializer().serializeToString(exportRoot);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${{width}}" height="${{height}}" viewBox="0 0 ${{width}} ${{height}}"><foreignObject width="100%" height="100%">${{serialized}}</foreignObject></svg>`;
-  const svgUrl = URL.createObjectURL(new Blob([svg], {{type: "image/svg+xml;charset=utf-8"}}));
-  const image = new Image();
-  image.decoding = "async";
-  const loaded = new Promise((resolve, reject) => {{
-    image.onload = resolve;
-    image.onerror = reject;
-  }});
-  image.src = svgUrl;
-  await loaded;
+    const serialized = new XMLSerializer().serializeToString(exportRoot);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${{width}}" height="${{height}}" viewBox="0 0 ${{width}} ${{height}}"><foreignObject x="0" y="0" width="${{width}}" height="${{height}}">${{serialized}}</foreignObject></svg>`;
+    const image = await loadSvgImage(svg);
 
-  const canvasOut = document.createElement("canvas");
-  const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
-  canvasOut.width = Math.round(width * pixelRatio);
-  canvasOut.height = Math.round(height * pixelRatio);
-  const context = canvasOut.getContext("2d");
-  context.scale(pixelRatio, pixelRatio);
-  context.drawImage(image, 0, 0, width, height);
-  URL.revokeObjectURL(svgUrl);
+    const canvasOut = document.createElement("canvas");
+    const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
+    canvasOut.width = Math.round(width * pixelRatio);
+    canvasOut.height = Math.round(height * pixelRatio);
+    canvasOut.style.width = `${{width}}px`;
+    canvasOut.style.height = `${{height}}px`;
+    const context = canvasOut.getContext("2d");
+    context.scale(pixelRatio, pixelRatio);
+    context.drawImage(image, 0, 0, width, height);
 
-  canvasOut.toBlob(blob => {{
-    if (blob) downloadBlob(blob, `${{data.label || "markdown-map"}}.full-map.png`);
-  }}, "image/png");
+    const blob = await canvasToBlob(canvasOut);
+    downloadBlob(blob, `${{safeFilename(data.label)}}.full-map.png`);
+  }} catch (error) {{
+    console.error(error);
+    alert(`PNG export failed: ${{error && error.message ? error.message : error}}`);
+  }} finally {{
+    button.textContent = previousLabel;
+    button.disabled = false;
+  }}
 }}
-
 canvas.addEventListener("click", event => {{
   if (suppressNextClick) {{
     suppressNextClick = false;
