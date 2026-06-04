@@ -1167,10 +1167,46 @@ function downloadBlob(blob, filename) {{
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
+  link.rel = "noopener";
   document.body.appendChild(link);
   link.click();
   link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}}
+
+function extensionForMime(mime) {{
+  if (mime === "image/png") return ".png";
+  if (mime === "text/html") return ".html";
+  return "";
+}}
+
+async function saveBlob(blob, filename, mime, description) {{
+  if (window.showSaveFilePicker) {{
+    try {{
+      const handle = await window.showSaveFilePicker({{
+        suggestedName: filename,
+        types: [{{description: description || "Export file", accept: {{[mime]: [extensionForMime(mime)]}}}}]
+      }});
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return "picker";
+    }} catch (error) {{
+      if (error && error.name === "AbortError") return "cancelled";
+      console.warn("File picker save failed; falling back to browser download.", error);
+    }}
+  }}
+  downloadBlob(blob, filename);
+  return "download";
+}}
+
+function openBlobPreview(blob, filename) {{
+  const url = URL.createObjectURL(blob);
+  const opened = window.open(url, "_blank", "noopener");
+  if (!opened) {{
+    alert(`Download was requested as ${{filename}}, but the browser may have blocked it. Check browser downloads or allow popups for this file.`);
+  }}
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }}
 
 function safeFilename(value, fallback) {{
@@ -1181,9 +1217,10 @@ function safeFilename(value, fallback) {{
   return cleaned || fallback || "markdown-map";
 }}
 
-function exportHtml() {{
+async function exportHtml() {{
   const htmlText = "<!doctype html>\\n" + document.documentElement.outerHTML;
-  downloadBlob(new Blob([htmlText], {{type: "text/html;charset=utf-8"}}), `${{safeFilename(data.label)}}.interactive.html`);
+  const filename = `${{safeFilename(data.label)}}.interactive.html`;
+  await saveBlob(new Blob([htmlText], {{type: "text/html;charset=utf-8"}}), filename, "text/html", "Interactive HTML");
 }}
 
 function loadSvgImage(svgText) {{
@@ -1356,7 +1393,11 @@ async function exportPng() {{
     context.scale(pixelRatio, pixelRatio);
     context.drawImage(image, 0, 0, width, height);
     const blob = await canvasToBlob(canvasOut);
-    downloadBlob(blob, `${{safeFilename(data.label)}}.full-map.png`);
+    const filename = `${{safeFilename(data.label)}}.full-map.png`;
+    const savedBy = await saveBlob(blob, filename, "image/png", "PNG image");
+    if (savedBy === "download") {{
+      setTimeout(() => openBlobPreview(blob, filename), 300);
+    }}
   }} catch (error) {{
     console.error(error);
     alert(`PNG export failed: ${{error && error.message ? error.message : error}}`);
